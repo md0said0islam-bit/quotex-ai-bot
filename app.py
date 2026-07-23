@@ -1,116 +1,177 @@
-import streamlit as st
-import pandas as pd
 import numpy as np
-import ta
-import time
+import pandas as pd
 
-# --- ১. পেজ সেটআপ ---
-st.set_page_config(page_title="Floating AI Signal Bot", page_icon="📈", layout="centered")
+# =========================================================
+# 1. CONFIGURATION: TIMEFRAMES & MARKETS
+# =========================================================
 
-st.title("🤖 Quick Expiry AI Signal Bot")
+QUOTEX_TIMEFRAMES = {
+    "5s": 5, "10s": 10, "15s": 15, "30s": 30,
+    "1m": 60, "2m": 120, "5m": 300, "10m": 600, "15m": 900, "30m": 1800,
+    "1h": 3600, "4h": 14400, "1d": 86400
+}
 
-# --- ২. স্টেট ম্যানেজমেন্ট ---
-if 'active_trade' not in st.session_state:
-    st.session_state.active_trade = False
-if 'trade_start' not in st.session_state:
-    st.session_state.trade_start = None
-if 'trade_duration' not in st.session_state:
-    st.session_state.trade_duration = 5
+MARKETS = {
+    "OTC_FOREX": [
+        "EURUSD_otc", "GBPUSD_otc", "USDJPY_otc", "AUDUSD_otc", "USDCAD_otc",
+        "USDCHF_otc", "NZDUSD_otc", "EURGBP_otc", "EURJPY_otc", "GBPJPY_otc",
+        "USDBRL_otc", "USDINR_otc", "USDBDT_otc"
+    ],
+    "STANDARD_FOREX": [
+        "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD"
+    ],
+    "CRYPTO_COMMODITIES": [
+        "BTCUSD", "ETHUSD", "XAUUSD", "UKBrent", "BTCUSD_otc", "XAUUSD_otc"
+    ]
+}
 
-# --- ৩. কাস্টম টাইমফ্রেম ফিল্টার ---
-col1, col2 = st.columns(2)
-with col1:
-    pair = st.selectbox("Asset Pair", ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "BTC/USD"])
-with col2:
-    # কাস্টম শর্ট টাইমফ্রেম যোগ করা হয়েছে
-    tf_option = st.selectbox("Expiry Time", ["5 Seconds", "10 Seconds", "15 Seconds", "30 Seconds", "1 Minute"])
-    
-    # সময় সেকেন্ডে কনভার্ট করার নিয়ম
-    if "Seconds" in tf_option:
-        duration_sec = int(tf_option.split()[0])
-    else:
-        duration_sec = int(tf_option.split()[0]) * 60
+ALL_MARKETS = sum(MARKETS.values(), [])
 
-# --- ৪. ডাটা জেনারেটর ---
-def generate_market_data():
-    np.random.seed(int(time.time() * 100) % 10000)
-    base_price = 1.0850 if "USD" in pair else 65000.0
-    returns = np.random.normal(0, 0.0008, 100)
-    closes = base_price * np.exp(np.cumsum(returns))
-    highs = closes + (np.random.rand(100) * 0.0005)
-    lows = closes - (np.random.rand(100) * 0.0005)
-    opens = closes + (np.random.randn(100) * 0.0002)
-    return pd.DataFrame({'open': opens, 'high': highs, 'low': lows, 'close': closes})
+BOT_SETTINGS = {
+    "TIMEFRAME": "1m",
+    "MIN_PAYOUT": 80,
+    "MAX_DAILY_LOSS": 5,        # ৫% লস হলে বট অফ হবে
+    "RISK_PER_TRADE_PERCENT": 2, # প্রতি ট্রেডে ২% ঝুঁকি
+    "EMA_PERIOD": 50            # ট্রেন্ড ফিল্টার
+}
 
-# --- ৫. AI সিগন্যাল লজিক ---
-def analyze_signals(df):
-    df['rsi'] = ta.momentum.rsi(df['close'], window=14)
-    df['ema_fast'] = ta.trend.ema_indicator(df['close'], window=9)
-    df['ema_slow'] = ta.trend.ema_indicator(df['close'], window=21)
-    
-    latest = df.iloc[-1]
-    prev2 = df.iloc[-3]
-    score = 0
-    reasons = []
+# =========================================================
+# 2. ANALYSIS ENGINE (TECHNICAL INDICATORS & PATTERNS)
+# =========================================================
 
-    if latest['ema_fast'] > latest['ema_slow']:
-        score += 1
-        reasons.append("EMA 9 > EMA 21 (Up Trend)")
-    else:
-        score -= 1
-        reasons.append("EMA 9 < EMA 21 (Down Trend)")
+class SignalEngine:
+    def __init__(self, df):
+        """
+        df: Pandas DataFrame with columns ['open', 'high', 'low', 'close', 'volume']
+        """
+        self.df = df
 
-    if latest['rsi'] < 35:
-        score += 2
-        reasons.append("RSI Oversold (UP Signal)")
-    elif latest['rsi'] > 65:
-        score -= 2
-        reasons.append("RSI Overbought (DOWN Signal)")
-
-    if prev2['high'] < latest['low']:
-        score += 1
-        reasons.append("Bullish FVG Zone")
-    elif prev2['low'] > latest['high']:
-        score -= 1
-        reasons.append("Bearish FVG Zone")
-
-    if score >= 2:
-        return "CALL 🟢 (BUY)", reasons, score
-    elif score <= -2:
-        return "PUT 🔴 (SELL)", reasons, score
-    else:
-        return "WAIT ⚪ (NO SIGNAL)", reasons, score
-
-# --- ৬. কাউন্টডাউন টাইমার ---
-if st.session_state.active_trade:
-    elapsed = int(time.time() - st.session_state.trade_start)
-    remaining = st.session_state.trade_duration - elapsed
-    
-    if remaining > 0:
-        st.warning(f"⏳ Trade Active: **{remaining}s** remaining")
-        time.sleep(1)
-        st.rerun()
-    else:
-        st.session_state.active_trade = False
-        st.success("✅ Trade Finished! Ready for next trade.")
-        st.rerun()
-
-# --- ৭. সিগন্যাল বাটন ---
-if not st.session_state.active_trade:
-    if st.button("🚀 Get Signal", use_container_width=True):
-        df = generate_market_data()
-        signal, reasons, score = analyze_signals(df)
+    def calculate_ema(self, period=50):
+        """EMA গণনা করে ট্রেন্ড ফিল্টার করে"""
+        self.df['ema'] = self.df['close'].ewm(span=period, adjust=False).mean()
+        latest_close = self.df['close'].iloc[-1]
+        latest_ema = self.df['ema'].iloc[-1]
         
-        st.markdown(f"### **Signal:** {signal}")
-        st.write(f"Confidence: {score} / 4")
-        
-        for r in reasons:
-            st.caption(f"- {r}")
+        if latest_close > latest_ema:
+            return "UPTREND"
+        elif latest_close < latest_ema:
+            return "DOWNTREND"
+        return "SIDEWAYS"
 
-        if "WAIT" not in signal:
-            st.session_state.active_trade = True
-            st.session_state.trade_start = time.time()
-            st.session_state.trade_duration = duration_sec
-            time.sleep(1)
-            st.rerun()
+    def check_support_resistance(self, lookback=30):
+        """বিগত ক্যান্ডেলগুলোর থেকে Key Support & Resistance বের করে"""
+        recent_df = self.df.tail(lookback)
+        resistance = recent_df['high'].max()
+        support = recent_df['low'].min()
+        latest_close = self.df['close'].iloc[-1]
+        
+        # লেভেলের কাছাকাছি (0.05% Range) আছে কি না
+        near_support = abs(latest_close - support) / support < 0.0005
+        near_resistance = abs(latest_close - resistance) / resistance < 0.0005
+        
+        return near_support, near_resistance
+
+    def detect_fvg(self):
+        """Fair Value Gap (FVG) নির্ণয় করে"""
+        if len(self.df) < 3:
+            return None
+        
+        # ৩টি ক্যান্ডেলের বিশ্লেষণ
+        c1_high = self.df['high'].iloc[-3]
+        c1_low = self.df['low'].iloc[-3]
+        c3_high = self.df['high'].iloc[-1]
+        c3_low = self.df['low'].iloc[-1]
+        
+        if c3_low > c1_high:
+            return "BULLISH_FVG"
+        elif c3_high < c1_low:
+            return "BEARISH_FVG"
+        return None
+
+    def detect_ppr(self):
+        """Pivot Point Reversal (PPR) প্যাটার্ন পরীক্ষা করে"""
+        if len(self.df) < 2:
+            return None
+
+        prev = self.df.iloc[-2]
+        curr = self.df.iloc[-1]
+
+        # Bullish PPR: আগেরটা রেড ক্যান্ডেল, বর্তমানটা স্ট্রং গ্রিন
+        is_prev_red = prev['close'] < prev['open']
+        is_curr_green = curr['close'] > curr['open']
+        if is_prev_red and is_curr_green and curr['close'] > prev['high']:
+            return "BULLISH_PPR"
+
+        # Bearish PPR: আগেরটা গ্রিন ক্যান্ডেল, বর্তমানটা স্ট্রং রেড
+        is_prev_green = prev['close'] > prev['open']
+        is_curr_red = curr['close'] < curr['open']
+        if is_prev_green and is_curr_red and curr['close'] < prev['low']:
+            return "BEARISH_PPR"
+
+        return None
+
+# =========================================================
+# 3. MASTER SIGNAL GENERATOR (MAIN LOGIC)
+# =========================================================
+
+def generate_signal(market, candles_df, payout):
+    # ১. পে-আউট ফিল্টার
+    if payout < BOT_SETTINGS["MIN_PAYOUT"]:
+        return {"status": "REJECTED", "reason": "Low Payout"}
+
+    engine = SignalEngine(candles_df)
     
+    # ২. উপাদানসমূহ বিশ্লেষণ
+    trend = engine.calculate_ema(period=BOT_SETTINGS["EMA_PERIOD"])
+    at_support, at_resistance = engine.check_support_resistance()
+    fvg = engine.detect_fvg()
+    ppr = engine.detect_ppr()
+
+    # ৩. সিগন্যাল লজিক কম্বিনেশন (CALL / BUY)
+    if trend == "UPTREND":
+        if (at_support or fvg == "BULLISH_FVG") and ppr == "BULLISH_PPR":
+            return {
+                "status": "SIGNAL",
+                "action": "CALL (UP)",
+                "market": market,
+                "confidence": "HIGH",
+                "reason": "Uptrend + Support/FVG + Bullish PPR"
+            }
+
+    # ৪. সিগন্যাল লজিক কম্বিনেশন (PUT / SELL)
+    if trend == "DOWNTREND":
+        if (at_resistance or fvg == "BEARISH_FVG") and ppr == "BEARISH_PPR":
+            return {
+                "status": "SIGNAL",
+                "action": "PUT (DOWN)",
+                "market": market,
+                "confidence": "HIGH",
+                "reason": "Downtrend + Resistance/FVG + Bearish PPR"
+            }
+
+    return {"status": "NO_SIGNAL", "reason": "Conditions not met"}
+
+# =========================================================
+# 4. EXECUTION DEMO (টেস্ট রান)
+# =========================================================
+
+if __name__ == "__main__":
+    # ডেমো ক্যান্ডেলস্টিক ডেটা
+    sample_data = {
+        'open':  [1.0810, 1.0805, 1.0800, 1.0795, 1.0812],
+        'high':  [1.0815, 1.0810, 1.0802, 1.0798, 1.0820],
+        'low':   [1.0802, 1.0798, 1.0790, 1.0792, 1.0800],
+        'close': [1.0805, 1.0800, 1.0792, 1.0810, 1.0818],
+        'volume': [120, 140, 110, 200, 250]
+    }
+    df = pd.DataFrame(sample_data)
+
+    # টেস্ট সিগন্যাল চেক
+    result = generate_signal(market="EURUSD_otc", candles_df=df, payout=85)
+    
+    print("-----------------------------------------")
+    print("🤖 BOTS ANALYSIS RESULT")
+    print("-----------------------------------------")
+    for key, value in result.items():
+        print(f"{key.capitalize()}: {value}")
+    print("-----------------------------------------")
